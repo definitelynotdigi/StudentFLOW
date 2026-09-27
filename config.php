@@ -1,12 +1,11 @@
 <?php
-// config.php - Keep this file secure (do not upload to public GitHub)
 return [
     'smtp' => [
         'host'       => 'smtp.gmail.com',
-        'username'   => 'your-email@gmail.com',          // ← Change this
-        'password'   => 'your-16-digit-app-password',    // ← Use Gmail App Password
+        'username'   => 'digi.nymous@gmail.com',       // ← Your Gmail address
+        'password'   => 'gimksblhnqeanvxy',            // ← The NEW 16-char app password
         'port'       => 587,
-        'from_name'  => 'GRC Student Portal',
+        'from_name'  => 'StudentFLOW',
     ],
     'db' => [
         'host' => 'localhost',

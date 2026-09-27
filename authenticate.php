@@ -29,12 +29,29 @@ if ($user) {
         $reset_stmt->execute([$user['id']]);
 
         $_SESSION['user_id'] = $user['id'];
-        $_SESSION['username'] = $user['username'];
-        $_SESSION['role'] = $user['role'];
-        $_SESSION['last_activity'] = time();
+$_SESSION['username'] = $user['username'];
+$_SESSION['role'] = $user['role'];
+$_SESSION['last_activity'] = time();
 
-        header("Location: dashboard.php");
-        exit();
+/* -------------------------------------------------------------------------
+   ROLE-BASED DASHBOARD ROUTING
+   ------------------------------------------------------------------------- */
+$role_lc = strtolower($user['role']);
+if (in_array($role_lc, ['faculty', 'professor'], true)) {
+    header("Location: faculty/dashboard.php");
+} elseif (in_array($role_lc, ['admin', 'department'], true)) {
+    header("Location: admin/dashboard.php");
+} elseif ($role_lc === 'finance') {
+    header("Location: finance/dashboard.php");
+} elseif ($role_lc === 'student') {
+    header("Location: student/dashboard.php");
+} else {
+    // Unknown role — fail safe.
+    session_unset();
+    session_destroy();
+    header("Location: index.php?login_error=invalid");
+}
+exit();
     } else {
         $failed_attempts = $user['failed_attempts'] + 1;
         if ($failed_attempts >= 5) {

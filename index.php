@@ -1,6 +1,6 @@
 <?php
 session_start();
-
+date_default_timezone_set('Asia/Manila');
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
@@ -8,23 +8,35 @@ require 'PHPMailer/Exception.php';
 require 'PHPMailer/PHPMailer.php';
 require 'PHPMailer/SMTP.php';
 
-// Generate CSRF Token
+$config = require __DIR__ . '/config.php';
+$smtp   = $config['smtp'] ?? [];
+
+// Generate CSRF Token once per session lifecycle if not already set
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
 // Database Connection
 $conn = new mysqli("localhost", "root", "", "student_portal_db");
+// Path to the StudentFLOW logo (used for CID embedding in emails).
+$logo_path = __DIR__ . '/assets/sf.png';
 
 // State flags for modal popups
 $active_modal = ""; // 'login', 'register', 'forgot'
 $msg = "";
 $msg_type = "";
 
-// Fetch announcements for landing page
+// Fetch GLOBAL announcements only (announcements table is global by design).
+// Private notifications live in the `notifications` table and must NEVER
+// appear on this public page.
 $announcements = [];
 try {
-    $res_ann = $conn->query("SELECT title, content, created_at FROM announcements ORDER BY created_at DESC LIMIT 3");
+    $res_ann = $conn->query("
+        SELECT title, content, category, priority, is_pinned, posted_by, created_at
+        FROM announcements
+        ORDER BY is_pinned DESC, created_at DESC
+        LIMIT 6
+    ");
     if ($res_ann) {
         $announcements = $res_ann->fetch_all(MYSQLI_ASSOC);
     }
@@ -51,7 +63,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         die("Security Validation Failed: Invalid CSRF Token.");
     }
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
     $email = trim($_POST['email']);
     $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
@@ -72,25 +83,96 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $mail = new PHPMailer(true);
         try {
             $mail->isSMTP();
-            $mail->Host       = 'smtp.gmail.com';
-            $mail->SMTPAuth   = true;
-            $mail->Username   = 'digi.nymous@gmail.com';
-            $mail->Password   = 'rbogocbeamvbqtlk';
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port       = 587;
+$mail->Host       = $smtp['host']       ?? 'smtp.gmail.com';
+$mail->SMTPAuth   = true;
+$mail->Username   = $smtp['username']   ?? '';
+$mail->Password   = $smtp['password']   ?? '';
+$mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+$mail->Port       = $smtp['port']       ?? 587;
 
-            $mail->setFrom($mail->Username, 'StudentFLOW Portal');
+$mail->setFrom($mail->Username, $smtp['from_name'] ?? 'StudentFLOW Portal');
             $mail->addAddress($email);
-            $mail->isHTML(true);
-            $mail->Subject = 'Password Reset OTP Verification Code';
-            $mail->Body    = "<div style='font-family: Arial, sans-serif; padding: 20px; border: 1px solid #ddd;'>
-                                <h3 style='color: #ab0a0a;'>Global Reciprocal Colleges</h3>
-                                <p>Your OTP verification code to reset your password is:</p>
-                                <h1 style='letter-spacing: 5px; color: #ab0a0a;'>{$otp}</h1>
-                                <p><small>This code will expire in 10 minutes.</small></p>
-                              </div>";
-            $mail->SMTPOptions = array('ssl' => array('verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true));
-            $mail->send();
+$mail->isHTML(true);
+$mail->Subject = 'Password Reset OTP Verification Code';
+
+if (file_exists($logo_path)) {
+    $mail->addEmbeddedImage(
+        $logo_path,
+        'studentflow_logo',
+        '',
+        'base64',
+        'image/png'
+    );
+}
+
+$mail->Body = "
+<table role='presentation' cellpadding='0' cellspacing='0' border='0' width='100%' style='background:#f4f6f9;padding:32px 0;font-family:Arial,Helvetica,sans-serif;'>
+  <tr>
+    <td align='center'>
+      <table role='presentation' cellpadding='0' cellspacing='0' border='0' width='520' style='max-width:520px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.05);'>
+
+        <!-- Header / Logo -->
+        <tr>
+          <td align='center' style='padding:28px 24px 12px 24px;'>
+            <img src='cid:studentflow_logo' alt='StudentFLOW' width='260' style='display:block;width:260px;max-width:100%;height:auto;border:0;' />
+          </td>
+        </tr>
+
+        <!-- Brand -->
+        <tr>
+          <td align='center' style='padding:0 24px 8px 24px;'>
+            <div style='font-size:14px;font-weight:700;color:#ab0a0a;letter-spacing:1px;text-transform:uppercase;'>Global Reciprocal Colleges</div>
+          </td>
+        </tr>
+
+        <!-- Divider -->
+        <tr>
+          <td align='center' style='padding:8px 40px 0 40px;'>
+            <div style='height:2px;background:#ab0a0a;width:60px;border-radius:2px;'></div>
+          </td>
+        </tr>
+
+        <!-- Message -->
+        <tr>
+          <td align='center' style='padding:24px 32px 0 32px;'>
+            <p style='margin:0;font-size:15px;color:#334155;line-height:1.55;'>Your OTP verification code to reset your password is:</p>
+          </td>
+        </tr>
+
+        <!-- OTP -->
+        <tr>
+          <td align='center' style='padding:18px 32px 8px 32px;'>
+            <div style='display:inline-block;padding:14px 28px;background:#fff7f7;border:1px dashed #ab0a0a;border-radius:12px;font-size:34px;font-weight:800;color:#ab0a0a;letter-spacing:8px;'>" . htmlspecialchars($otp) . "</div>
+          </td>
+        </tr>
+
+        <!-- Expiration -->
+        <tr>
+          <td align='center' style='padding:16px 32px 32px 32px;'>
+            <p style='margin:0;font-size:13px;color:#64748b;'>This code will expire in 10 minutes.</p>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td align='center' style='padding:18px 24px;background:#120202;'>
+            <div style='font-size:12px;color:#ffcccc;font-weight:600;letter-spacing:1px;'>StudentFLOW · Student Portal</div>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+";
+
+$mail->AltBody = "Global Reciprocal Colleges\n\n"
+    . "Your OTP verification code to reset your password is: " . $otp . "\n\n"
+    . "This code will expire in 10 minutes.\n\n"
+    . "StudentFLOW · Student Portal";
+
+$mail->SMTPOptions = array('ssl' => array('verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true));
+$mail->send();
 
             $_SESSION['forgot_step'] = 2;
             $forgot_step = 2;
@@ -109,38 +191,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
-// STEP 2: Verify OTP
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'forgot_verify_otp') {
     $active_modal = 'forgot';
     if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         die("Security Validation Failed: Invalid CSRF Token.");
     }
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
     $email = $_SESSION['reset_email'] ?? '';
     $otp_input = trim($_POST['otp_code']);
 
-    $stmt = $conn->prepare("SELECT id, otp_expires FROM users WHERE email = ? AND otp_code = ?");
+        $stmt = $conn->prepare("
+        SELECT id FROM users
+        WHERE email = ? AND otp_code = ?
+          AND otp_expires IS NOT NULL
+          AND otp_expires > NOW()
+        LIMIT 1
+    ");
     $stmt->bind_param("ss", $email, $otp_input);
     $stmt->execute();
     $res = $stmt->get_result();
 
     if ($res->num_rows === 1) {
         $user = $res->fetch_assoc();
-        if (strtotime($user['otp_expires']) >= time()) {
-            $_SESSION['otp_verified'] = true;
-            $_SESSION['forgot_step'] = 3;
-            $forgot_step = 3;
-            $msg = "OTP verified successfully! Please enter your new password.";
-            $msg_type = "success";
-        } else {
-            $forgot_step = 2;
-            $msg = "The OTP code has expired. Please request a new one.";
-            $msg_type = "danger";
-        }
+        $_SESSION['otp_verified'] = true;
+        $_SESSION['forgot_step'] = 3;
+        $forgot_step = 3;
+        $msg = "OTP verified! Please set your new password.";
+        $msg_type = "success";
     } else {
-        $forgot_step = 2;
-        $msg = "Invalid OTP verification code.";
+        $msg = "Invalid or expired OTP code.";
         $msg_type = "danger";
     }
 }
@@ -151,7 +230,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         die("Security Validation Failed: Invalid CSRF Token.");
     }
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
     if (empty($_SESSION['otp_verified']) || $_SESSION['otp_verified'] !== true) {
         $forgot_step = 1;
@@ -193,9 +271,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 }
 
 // -----------------------------------------------------------------------------
-// 2. REGISTER HANDLER
+// 2. REGISTER HANDLER WITH MASTERLIST VERIFICATION
 // -----------------------------------------------------------------------------
 $reg_step = $_SESSION['reg_step'] ?? 1;
+$old = []; // holds previously submitted registration values (filled on a failed submit)
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'reg_back_step1') {
     $_SESSION['reg_step'] = 1;
@@ -208,89 +287,196 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         die("Security Validation Failed: Invalid CSRF Token.");
     }
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
-    $role = $_POST['role'];
+    // Keep what was typed so the form can be re-filled if validation fails
+    $old = $_POST;
+
+    // Only accept known roles. Only 'Student' needs Master List verification;
+    // 'Professor' (Faculty) and 'Department' (Admin/Staff) register directly.
+    $allowed_roles = ['Student', 'Professor', 'Department', 'finance'];
+    $role = $_POST['role'] ?? 'Student';
+    if (!in_array($role, $allowed_roles, true)) {
+        $role = 'Student';
+    }
+    $requires_master_list = ($role === 'Student');
+
     $student_id = trim($_POST['student_id']);
     $first_name = trim($_POST['first_name']);
     $last_name = trim($_POST['last_name']);
     $username = trim($_POST['username']);
     $email = trim($_POST['email']);
     $phone = trim($_POST['phone']);
-    $dept_course = trim($_POST['department_course']);
+    $department = trim($_POST['department'] ?? '');
+    $course = trim($_POST['course'] ?? '');
+    $dept_course = $department . ($course ? ' - ' . $course : '');
     $password = $_POST['password'];
     $confirm_password = $_POST['confirm_password'];
 
-    $email_username = explode('@', $email)[0];
-    $pattern = '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{8,}$/';
+    // Verify if Student ID is registered in Admin Master List
+    $master_check_passed = true;
+    if ($requires_master_list) {
+        $ml_stmt = $conn->prepare("SELECT * FROM student_masterlist WHERE student_id = ?");
+        $ml_stmt->bind_param("s", $student_id);
+        $ml_stmt->execute();
+        $ml_res = $ml_stmt->get_result();
 
-    $check = $conn->prepare("SELECT id FROM users WHERE username = ? OR email = ? OR student_id = ?");
-    $check->bind_param("sss", $username, $email, $student_id);
-    $check->execute();
-    $res = $check->get_result();
-
-    if ($res->num_rows > 0) {
-        $msg = "Username, email, or ID Number is already registered.";
-        $msg_type = "danger";
-    } elseif ($password !== $confirm_password) {
-        $msg = "Passwords do not match.";
-        $msg_type = "danger";
-    } elseif (!preg_match($pattern, $password)) {
-        $msg = "Password must be at least 8 characters with upper, lower, number, and special character.";
-        $msg_type = "danger";
-    } elseif (!empty($email_username) && stripos($password, $email_username) !== false) {
-        $msg = "Password must not include your email username.";
-        $msg_type = "danger";
-    } else {
-        $otp = sprintf("%06d", random_int(100000, 999999));
-        $expires = date('Y-m-d H:i:s', strtotime('+10 minutes'));
-        $pass_hash = password_hash($password, PASSWORD_BCRYPT);
-
-        $existing = $conn->prepare("SELECT id FROM users WHERE email = ? AND is_verified = 0");
-        $existing->bind_param("s", $email);
-        $existing->execute();
-        $ex_res = $existing->get_result();
-
-        if ($ex_res->num_rows > 0) {
-            $user_id = $ex_res->fetch_assoc()['id'];
-            $stmt = $conn->prepare("UPDATE users SET username = ?, password_hash = ?, role = ?, student_id = ?, first_name = ?, last_name = ?, phone = ?, department_course = ?, otp_code = ?, otp_expires = ? WHERE id = ?");
-            $stmt->bind_param("ssssssssssi", $username, $pass_hash, $role, $student_id, $first_name, $last_name, $phone, $dept_course, $otp, $expires, $user_id);
-            $stmt->execute();
-        } else {
-            $stmt = $conn->prepare("INSERT INTO users (username, email, password_hash, role, student_id, first_name, last_name, phone, department_course, otp_code, otp_expires, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)");
-            $stmt->bind_param("sssssssssss", $username, $email, $pass_hash, $role, $student_id, $first_name, $last_name, $phone, $dept_course, $otp, $expires);
-            $stmt->execute();
-        }
-
-        $mail = new PHPMailer(true);
-        try {
-            $mail->isSMTP();
-            $mail->Host       = 'smtp.gmail.com';
-            $mail->SMTPAuth   = true;
-            $mail->Username   = 'digi.nymous@gmail.com';
-            $mail->Password   = 'rbogocbeamvbqtlk';
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port       = 587;
-
-            $mail->setFrom($mail->Username, 'StudentFLOW');
-            $mail->addAddress($email);
-            $mail->isHTML(true);
-            $mail->Subject = 'Account Registration OTP Code';
-            $mail->Body    = "<div style='font-family: Arial, sans-serif; padding: 20px; border: 1px solid #ddd;'>
-                                <h3 style='color: #ab0a0a;'>Global Reciprocal Colleges</h3>
-                                <p>Welcome! Your OTP code to complete account registration is:</p>
-                                <h1 style='letter-spacing: 5px; color: #ab0a0a;'>{$otp}</h1>
-                                <p><small>This code is valid for 10 minutes.</small></p>
-                              </div>";
-            $mail->SMTPOptions = array('ssl' => array('verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true));
-            $mail->send();
-
-            $_SESSION['reg_email'] = $email;
-            $_SESSION['reg_step'] = 2;
-            $reg_step = 2;
-        } catch (Exception $e) {
-            $msg = "Error sending OTP email: " . $mail->ErrorInfo;
+        if ($ml_res->num_rows === 0) {
+            $master_check_passed = false;
+            if (preg_match('/^(FAC|DEP)-/i', $student_id)) {
+                // The person typed a Faculty/Staff ID while the Role is still "Student"
+                $msg = "\"".$student_id."\" looks like a Faculty/Staff ID, but the Role is set to Student. Please change Role to \"Professor / Faculty\" (or \"Department / Admin\") and try again.";
+            } else {
+                $msg = "Student ID Number (".$student_id.") is not registered in the Master List. Please contact the Admin.";
+            }
             $msg_type = "danger";
+        }
+    }
+
+    if ($master_check_passed) {
+        $check = $conn->prepare("SELECT id FROM users WHERE username = ? OR email = ? OR student_id = ?");
+        $check->bind_param("sss", $username, $email, $student_id);
+        $check->execute();
+        $res = $check->get_result();
+
+        $email_username = explode('@', $email)[0];
+        $pattern = '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{8,}$/';
+
+        if ($res->num_rows > 0) {
+            $msg = "Username, Email, or ID Number is already registered in the system.";
+            $msg_type = "danger";
+        } elseif ($password !== $confirm_password) {
+            $msg = "Passwords do not match.";
+            $msg_type = "danger";
+        } elseif (!preg_match($pattern, $password)) {
+            $msg = "Password must be at least 8 characters with upper, lower, number, and special character.";
+            $msg_type = "danger";
+        } elseif (!empty($email_username) && stripos($password, $email_username) !== false) {
+            $msg = "Password must not include your email username.";
+            $msg_type = "danger";
+        } else {
+            $otp = sprintf("%06d", random_int(100000, 999999));
+            $expires = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+            $pass_hash = password_hash($password, PASSWORD_BCRYPT);
+
+            $existing = $conn->prepare("SELECT id FROM users WHERE email = ? AND is_verified = 0");
+            $existing->bind_param("s", $email);
+            $existing->execute();
+            $ex_res = $existing->get_result();
+
+            if ($ex_res->num_rows > 0) {
+                $user_id = $ex_res->fetch_assoc()['id'];
+                $stmt = $conn->prepare("UPDATE users SET username = ?, password_hash = ?, role = ?, student_id = ?, first_name = ?, last_name = ?, phone = ?, department = ?, course = ?, department_course = ?, otp_code = ?, otp_expires = ? WHERE id = ?");
+                $stmt->bind_param("ssssssssssssi", $username, $pass_hash, $role, $student_id, $first_name, $last_name, $phone, $department, $course, $dept_course, $otp, $expires, $user_id);
+                $stmt->execute();
+            } else {
+                $stmt = $conn->prepare("INSERT INTO users (username, email, password_hash, role, student_id, first_name, last_name, phone, department, course, department_course, otp_code, otp_expires, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)");
+                $stmt->bind_param("sssssssssssss", $username, $email, $pass_hash, $role, $student_id, $first_name, $last_name, $phone, $department, $course, $dept_course, $otp, $expires);
+                $stmt->execute();
+            }
+
+            $mail = new PHPMailer(true);
+            try {
+                $mail->isSMTP();
+$mail->Host       = $smtp['host']       ?? 'smtp.gmail.com';
+$mail->SMTPAuth   = true;
+$mail->Username   = $smtp['username']   ?? '';
+$mail->Password   = $smtp['password']   ?? '';
+$mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+$mail->Port       = $smtp['port']       ?? 587;
+
+$mail->setFrom($mail->Username, $smtp['from_name'] ?? 'StudentFLOW Portal');
+                $mail->addAddress($email);
+$mail->isHTML(true);
+$mail->Subject = 'Account Registration OTP Code';
+
+if (file_exists($logo_path)) {
+    $mail->addEmbeddedImage(
+        $logo_path,
+        'studentflow_logo',
+        '',
+        'base64',
+        'image/png'
+    );
+}
+
+$mail->Body = "
+<table role='presentation' cellpadding='0' cellspacing='0' border='0' width='100%' style='background:#f4f6f9;padding:32px 0;font-family:Arial,Helvetica,sans-serif;'>
+  <tr>
+    <td align='center'>
+      <table role='presentation' cellpadding='0' cellspacing='0' border='0' width='520' style='max-width:520px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.05);'>
+
+        <!-- Header / Logo -->
+        <tr>
+          <td align='center' style='padding:28px 24px 12px 24px;'>
+            <img src='cid:studentflow_logo' alt='StudentFLOW' width='260' style='display:block;width:260px;max-width:100%;height:auto;border:0;' />
+          </td>
+        </tr>
+
+        <!-- Brand -->
+        <tr>
+          <td align='center' style='padding:0 24px 8px 24px;'>
+            <div style='font-size:14px;font-weight:700;color:#ab0a0a;letter-spacing:1px;text-transform:uppercase;'>Global Reciprocal Colleges</div>
+          </td>
+        </tr>
+
+        <!-- Divider -->
+        <tr>
+          <td align='center' style='padding:8px 40px 0 40px;'>
+            <div style='height:2px;background:#ab0a0a;width:60px;border-radius:2px;'></div>
+          </td>
+        </tr>
+
+        <!-- Message -->
+        <tr>
+          <td align='center' style='padding:24px 32px 0 32px;'>
+            <p style='margin:0;font-size:15px;color:#334155;line-height:1.55;'>Welcome! Your OTP code to complete account registration is:</p>
+          </td>
+        </tr>
+
+        <!-- OTP -->
+        <tr>
+          <td align='center' style='padding:18px 32px 8px 32px;'>
+            <div style='display:inline-block;padding:14px 28px;background:#fff7f7;border:1px dashed #ab0a0a;border-radius:12px;font-size:34px;font-weight:800;color:#ab0a0a;letter-spacing:8px;'>" . htmlspecialchars($otp) . "</div>
+          </td>
+        </tr>
+
+        <!-- Expiration -->
+        <tr>
+          <td align='center' style='padding:16px 32px 32px 32px;'>
+            <p style='margin:0;font-size:13px;color:#64748b;'>This code is valid for 10 minutes.</p>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td align='center' style='padding:18px 24px;background:#120202;'>
+            <div style='font-size:12px;color:#ffcccc;font-weight:600;letter-spacing:1px;'>StudentFLOW · Student Portal</div>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+";
+
+// Plain-text fallback — prevents the PNG filename from appearing in
+// Gmail's inbox preview snippet.
+$mail->AltBody = "Global Reciprocal Colleges\n\n"
+    . "Welcome! Your OTP code to complete account registration is: " . $otp . "\n\n"
+    . "This code is valid for 10 minutes.\n\n"
+    . "StudentFLOW · Student Portal";
+
+$mail->SMTPOptions = array('ssl' => array('verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true));
+$mail->send();
+
+                $_SESSION['reg_email'] = $email;
+                $_SESSION['reg_step'] = 2;
+                $reg_step = 2;
+            } catch (Exception $e) {
+                $msg = "Error sending OTP email: " . $mail->ErrorInfo;
+                $msg_type = "danger";
+            }
         }
     }
 }
@@ -300,41 +486,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         die("Security Validation Failed: Invalid CSRF Token.");
     }
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
-    $email = $_SESSION['reg_email'] ?? '';
+    $email = trim($_SESSION['reg_email'] ?? '');
     $otp_input = trim($_POST['otp_code']);
 
-    $stmt = $conn->prepare("SELECT id, otp_expires FROM users WHERE email = ? AND otp_code = ?");
-    $stmt->bind_param("ss", $email, $otp_input);
-    $stmt->execute();
-    $res = $stmt->get_result();
-
-    if ($res->num_rows === 1) {
-        $user = $res->fetch_assoc();
-        if (strtotime($user['otp_expires']) >= time()) {
-            $update = $conn->prepare("UPDATE users SET is_verified = 1, otp_code = NULL, otp_expires = NULL WHERE id = ?");
-            $update->bind_param("i", $user['id']);
-            $update->execute();
-
-            unset($_SESSION['reg_email']);
-            unset($_SESSION['reg_step']);
-            $active_modal = 'login';
-            $msg = "Registration successful! Please log in.";
-            $msg_type = "success";
-        } else {
-            $msg = "OTP expired. Please start registration again.";
-            $msg_type = "danger";
-        }
-    } else {
-        $msg = "Invalid OTP code entered.";
+    if (empty($email)) {
+        $msg = "Session expired. Please re-enter your details.";
         $msg_type = "danger";
+    } else {
+        $stmt = $conn->prepare("
+    SELECT id, student_id, role, first_name, last_name, department, course
+    FROM users
+    WHERE email = ? AND otp_code = ?
+      AND otp_expires IS NOT NULL
+      AND otp_expires > NOW()
+    LIMIT 1
+");
+        $stmt->bind_param("ss", $email, $otp_input);
+        $stmt->execute();
+        $res = $stmt->get_result();
+
+        if ($res->num_rows === 1) {
+            $user = $res->fetch_assoc();
+
+            // Mark user account as verified
+            $update_u = $conn->prepare("UPDATE users SET is_verified = 1, otp_code = NULL, otp_expires = NULL WHERE id = ?");
+            $update_u->bind_param("i", $user['id']);
+            $update_u->execute();
+
+            // Sync with Student Master List
+if (strtolower($user['role']) === 'student' && !empty($user['student_id'])) {
+    $student_id = $user['student_id'];
+    $f_name = !empty($user['first_name']) ? $user['first_name'] : 'Student';
+    $l_name = !empty($user['last_name']) ? $user['last_name'] : 'User';
+    $dept   = !empty($user['department']) ? $user['department'] : 'College of Computer Studies';
+    $crs    = !empty($user['course']) ? $user['course'] : 'BSIT';
+
+    $check_ml = $conn->prepare("SELECT id FROM student_masterlist WHERE student_id = ?");
+    $check_ml->bind_param("s", $student_id);
+    $check_ml->execute();
+    $ml_res = $check_ml->get_result();
+
+    if ($ml_res->num_rows > 0) {
+        $update_ml = $conn->prepare("UPDATE student_masterlist SET status = 'active', first_name = ?, last_name = ?, department = ?, course = ? WHERE student_id = ?");
+        $update_ml->bind_param("sssss", $f_name, $l_name, $dept, $crs, $student_id);
+        $update_ml->execute();
+    } else {
+        $ins_ml = $conn->prepare("INSERT INTO student_masterlist (student_id, first_name, last_name, department, course, status) VALUES (?, ?, ?, ?, ?, 'active')");
+        $ins_ml->bind_param("sssss", $student_id, $f_name, $l_name, $dept, $crs);
+        $ins_ml->execute();
     }
 }
 
-// -----------------------------------------------------------------------------
-// 3. LOGIN URL ERROR REDIRECT CHECK
-// -----------------------------------------------------------------------------
+            // Registration complete — clear the registration session state
+            // and hand the person off to the Login modal.
+            unset($_SESSION['reg_email']);
+            unset($_SESSION['reg_step']);
+            $reg_step = 1;
+            $active_modal = 'login';
+            $msg = "Account verified successfully! You can now log in.";
+            $msg_type = "success";
+        } else {
+            $msg = "Invalid or expired OTP code. Please try again.";
+            $msg_type = "danger";
+        }
+    }
+}
+
 if (isset($_GET['login_error'])) {
     $active_modal = 'login';
 }
@@ -366,6 +584,24 @@ if (isset($_GET['login_error'])) {
         .navbar-grc { 
             background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-secondary) 100%); 
             border-bottom: 3px solid var(--grc-hover); 
+        }
+        .navbar-grc .dropdown-menu {
+            background-color: var(--grc-dark);
+            border: 1px solid var(--grc-secondary);
+            border-radius: 8px;
+            padding: 0.5rem 0;
+        }
+        .navbar-grc .dropdown-item {
+            color: #e0e0e0;
+            font-size: 0.9rem;
+            padding: 8px 16px;
+            transition: all 0.2s ease;
+        }
+        .navbar-grc .dropdown-item:hover, 
+        .navbar-grc .dropdown-item:focus {
+            background-color: var(--grc-secondary);
+            color: #ffffff;
+            padding-left: 20px;
         }
         .hero-section {
             background: linear-gradient(135deg, #1e0202 0%, #4a0505 50%, #110101 100%);
@@ -410,6 +646,9 @@ if (isset($_GET['login_error'])) {
             transform: translateY(-3px);
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
         }
+        .announcement-card.ann-urgent    { border-left-color: #dc3545 !important; background: #fff5f5; }
+.announcement-card.ann-important { border-left-color: #ffc107 !important; background: #fffdf3; }
+
         .modal-dark-custom {
             background-color: #212529;
             color: #f8f9fa;
@@ -441,7 +680,6 @@ if (isset($_GET['login_error'])) {
             50% { transform: translateY(-10px); }
             100% { transform: translateY(0px); }
         }
-
         .hero-logo {
             max-width: 800px;
             width: 100%;
@@ -450,12 +688,10 @@ if (isset($_GET['login_error'])) {
             animation: floatLogo 4s ease-in-out infinite;
             transition: transform 0.3s ease, filter 0.3s ease;
         }
-
         .hero-logo:hover {
             transform: scale(1.05);
             filter: drop-shadow(0 15px 25px rgba(255, 30, 30, 0.35));
         }
-
         .btn-portal-hero {
             background: #ffffff;
             color: var(--grc-dark);
@@ -465,12 +701,8 @@ if (isset($_GET['login_error'])) {
             align-items: center;
             justify-content: center;
             font-size: 1.05rem;
-            letter-spacing: 0.3px;
-            transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-            overflow: hidden;
+            transition: all 0.35s ease;
         }
-
         .btn-portal-hero:hover {
             background-color: var(--grc-hover);
             color: #ffffff;
@@ -478,13 +710,73 @@ if (isset($_GET['login_error'])) {
             transform: translateY(-3px);
             box-shadow: 0 10px 25px rgba(255, 30, 30, 0.4);
         }
+        .btn-portal-hero .chevron-icon { transition: transform 0.3s ease; }
+        .btn-portal-hero:hover .chevron-icon { transform: translateX(5px); }
 
-        .btn-portal-hero .chevron-icon {
-            transition: transform 0.3s ease;
-        }
+        /* Show/Hide Password Toggle — integrated with existing input-group */
+.password-toggle-btn {
+    background: #fff;
+    border: 1px solid #ced4da;
+    border-left: none;
+    color: #6c757d;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s ease, background 0.2s ease;
+}
+.password-toggle-btn:hover,
+.password-toggle-btn:focus {
+    background: #f8f9fa;
+    color: var(--grc-secondary);
+    box-shadow: none;
+}
+.password-toggle-btn:focus-visible {
+    outline: 2px solid var(--grc-primary);
+    outline-offset: 1px;
+}
+/* Keep rounded corners consistent with the input-group */
+.input-group > .password-toggle-btn:last-child {
+    border-top-right-radius: 0.375rem;
+    border-bottom-right-radius: 0.375rem;
+}
+/* Show/Hide Password Toggle — integrated with input-group */
+.password-toggle-btn {
+    background: #fff;
+    border: 1px solid #ced4da;
+    border-left: none;
+    color: #6c757d;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s ease, background 0.2s ease;
+}
+.password-toggle-btn:hover,
+.password-toggle-btn:focus {
+    background: #f8f9fa;
+    color: var(--grc-secondary);
+    box-shadow: none;
+}
+.password-toggle-btn:focus-visible {
+    outline: 2px solid var(--grc-primary);
+    outline-offset: 1px;
+}
+.input-group > .password-toggle-btn:last-child {
+    border-top-right-radius: 0.375rem;
+    border-bottom-right-radius: 0.375rem;
+}
+/* Small input-group variant (register modal uses form-control-sm) */
+.input-group-sm > .password-toggle-btn {
+    padding: 0 8px;
+    font-size: 0.8rem;
+}
 
-        .btn-portal-hero:hover .chevron-icon {
-            transform: translateX(5px);
+        @media (min-width: 992px) {
+            .navbar-grc .dropdown:hover .dropdown-menu {
+                display: block;
+                margin-top: 0;
+            }
         }
     </style>
 </head>
@@ -494,8 +786,8 @@ if (isset($_GET['login_error'])) {
     <nav class="navbar navbar-grc navbar-dark navbar-expand-lg p-3 shadow-sm">
         <div class="container px-lg-4">
             <a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="index.php">
-                <img src="assets/grc3.png" alt="GRC Logo" height="35" class="d-inline-block align-text-top">
-                <img src="assets/grc2.png" alt="GRC Logo" height="35" class="d-inline-block align-text-top">
+                <img src="assets/grc3.png" alt="GRC Logo" height="35">
+                <img src="assets/grc2.png" alt="GRC Logo" height="35">
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -503,25 +795,47 @@ if (isset($_GET['login_error'])) {
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto align-items-center">
                     <li class="nav-item me-2"><a class="nav-link active fw-medium" href="index.php">Home</a></li>
+                    
+                    <!-- Dynamic Academics Dropdown -->
+                    <li class="nav-item dropdown me-2">
+                        <a class="nav-link dropdown-toggle fw-medium" href="#" id="academicsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            Academics
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-dark shadow" aria-labelledby="academicsDropdown">
+                            <li><h6 class="dropdown-header text-warning">College of Computer Studies</h6></li>
+                            <li><a class="dropdown-item" href="#">BS Information Technology (BSIT)</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header text-warning">College of Business Administration</h6></li>
+                            <li><a class="dropdown-item" href="#">BSBA Financial Management</a></li>
+                            <li><a class="dropdown-item" href="#">BSBA Marketing Management</a></li>
+                            <li><a class="dropdown-item" href="#">BSBA Human Resource Management</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header text-warning">College of Education</h6></li>
+                            <li><a class="dropdown-item" href="#">Bachelor of Secondary Education (BSED)</a></li>
+                            <li><a class="dropdown-item" href="#">Bachelor of Elementary Education (BEED)</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header text-warning">College of Accountancy</h6></li>
+                            <li><a class="dropdown-item" href="#">BS Accountancy (BSA)</a></li>
+                        </ul>
+                    </li>
+
                     <?php if (!isset($_SESSION['user_id'])): ?>
                         <li class="nav-item me-2">
                             <a class="nav-link fw-medium" href="#" data-bs-toggle="modal" data-bs-target="#announcementsListModal">Announcements</a>
                         </li>
                     <?php endif; ?>
+
+                    <li class="nav-item me-2">
+                        <a class="nav-link fw-medium" href="#" data-bs-toggle="modal" data-bs-target="#contactModal">Contact Us</a>
+                    </li>
+
                     <li class="nav-item me-3">
                         <a class="nav-link fw-medium" href="#" data-bs-toggle="modal" data-bs-target="#aboutModal">About</a>
                     </li>
+
                     <?php if (isset($_SESSION['user_id'])): ?>
                         <li class="nav-item">
-                            <a class="btn btn-grc-accent fw-semibold px-3 py-2" href="dashboard.php">
-                                Go to Dashboard
-                            </a>
-                        </li>
-                    <?php else: ?>
-                        <li class="nav-item">
-                            <button class="btn btn-outline-light btn-sm fw-semibold rounded-pill px-3 py-2" data-bs-toggle="modal" data-bs-target="#loginModal">
-                                <i class="bi bi-box-arrow-in-right me-1"></i> Log In
-                            </button>
+                            <a class="btn btn-grc-accent fw-semibold px-3 py-2" href="dashboard.php">Go to Dashboard</a>
                         </li>
                     <?php endif; ?>
                 </ul>
@@ -539,18 +853,16 @@ if (isset($_GET['login_error'])) {
                 <div class="col-lg-7">
                     <h1 class="display-4 fw-bold mb-3">Empowering Minds, Shaping Futures</h1>
                     <p class="lead mb-4 text-light opacity-75" style="max-width: 650px;">
-                        Welcome to the official Global Reciprocal Colleges (GRC) Web Portal. Access academic reports, view tuition statements, and manage account services seamlessly.
+                        Welcome to the official StudentFLOW (GRC Web Portal.) Access academic reports, view tuition statements, and manage account services seamlessly.
                     </p>
                     <div class="mt-4">
                         <?php if (!isset($_SESSION['user_id'])): ?>
-                            <button class="btn btn-portal-hero btn-lg fw-bold px-4 py-3 shadow" data-bs-toggle="modal" data-bs-target="#loginModal">
+                            <button class="btn btn-portal-hero btn-lg fw-bold px-4 py-3 shadow" data-bs-toggle="modal" data-bs-target="#modalQuestion1">
                                 <span>Access Portal</span>
                                 <i class="bi bi-arrow-right ms-2 chevron-icon"></i>
                             </button>
                         <?php else: ?>
                             <a href="dashboard.php" class="btn btn-portal-hero btn-lg fw-bold px-4 py-3 shadow">
-                                <span class="btn-icon-wrapper me-2">
-                                </span>
                                 <span>Open Dashboard</span>
                                 <i class="bi bi-arrow-right ms-2 chevron-icon"></i>
                             </a>
@@ -561,7 +873,146 @@ if (isset($_GET['login_error'])) {
         </div>
     </header>
 
-    <!-- Core Portal Features -->
+    <div class="modal fade" id="modalQuestionDepartment" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+            <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                <i class="fa-solid fa-building-user fa-3x mb-2 text-warning"></i>
+                <h4 class="fw-bold mb-0">Department Verification</h4>
+            </div>
+            <div class="modal-body p-4">
+                <h5 class="fw-semibold text-dark mb-4">Are you a Admin?</h5>
+                <div class="d-flex justify-content-center gap-3">
+                    <!-- YES → Registered-department question -->
+                    <button type="button"
+                            class="btn btn-grc px-4 py-2 fw-bold"
+                            onclick="chooseRegisteredDepartmentBranch()">
+                        <i class="fa-solid fa-check me-1"></i> Yes
+                    </button>
+                    <!-- NO → Faculty question (faculty are neither Students nor Departments) -->
+                    <button type="button"
+                            class="btn btn-outline-danger px-4 py-2 fw-bold"
+                            onclick="chooseFacultyBranch()">
+                        <i class="fa-solid fa-xmark me-1"></i> No
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalQuestionFaculty" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+            <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                <i class="fa-solid fa-chalkboard-user fa-3x mb-2 text-warning"></i>
+                <h4 class="fw-bold mb-0">Faculty Verification</h4>
+            </div>
+            <div class="modal-body p-4">
+                <h5 class="fw-semibold text-dark mb-4">Are you a Professor?</h5>
+                <div class="d-flex justify-content-center gap-3">
+                    <button type="button"
+                            class="btn btn-grc px-4 py-2 fw-bold"
+                            onclick="chooseRegisteredFacultyBranch()">
+                        <i class="fa-solid fa-check me-1"></i> Yes
+                    </button>
+                    <button type="button"
+        class="btn btn-outline-danger px-4 py-2 fw-bold"
+        onclick="chooseFinanceBranch()">
+    <i class="fa-solid fa-xmark me-1"></i> No
+</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODAL FLOW — STEP 4 (Faculty branch): "Are you a registered faculty?"
+     ------------------------------------------------------------
+     YES → #loginModal     (existing login)
+     NO  → #registerModal  (existing register, role locked to Professor)
+     ============================================================ -->
+<div class="modal fade" id="modalQuestionFacultyReg" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+            <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                <i class="fa-solid fa-chalkboard-user fa-3x mb-2 text-warning"></i>
+                <h4 class="fw-bold mb-0">Faculty Verification</h4>
+            </div>
+            <div class="modal-body p-4">
+                <h5 class="fw-semibold text-dark mb-4">Are you a registered faculty?</h5>
+                <div class="d-flex justify-content-center gap-3">
+                    <!-- YES → Existing login modal -->
+                    <button type="button"
+                            class="btn btn-grc px-4 py-2 fw-bold"
+                            onclick="openLoginForFaculty()">
+                        <i class="fa-solid fa-check me-1"></i> Yes
+                    </button>
+                    <!-- NO → Existing register modal, role = Professor -->
+                    <button type="button"
+                            class="btn btn-outline-danger px-4 py-2 fw-bold"
+                            onclick="openRegisterForFaculty()">
+                        <i class="fa-solid fa-xmark me-1"></i> No
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODAL FLOW — STEP 5 (Finance branch): "Are you a Finance user?"
+     ------------------------------------------------------------
+     YES → #modalQuestionFinanceReg ("Are you a registered Finance user?")
+     NO  → Back to "Are you a student?"
+     ============================================================ -->
+<div class="modal fade" id="modalQuestionFinance" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+            <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                <i class="fa-solid fa-coins fa-3x mb-2 text-warning"></i>
+                <h4 class="fw-bold mb-0">Finance Verification</h4>
+            </div>
+            <div class="modal-body p-4">
+                <h5 class="fw-semibold text-dark mb-4">Are you a Finance?</h5>
+                <div class="d-flex justify-content-center gap-3">
+                    <button type="button" class="btn btn-grc px-4 py-2 fw-bold" onclick="chooseRegisteredFinanceBranch()">
+                        <i class="fa-solid fa-check me-1"></i> Yes
+                    </button>
+                    <button type="button" class="btn btn-outline-danger px-4 py-2 fw-bold"
+                            onclick="goBackToPortalQuestion('modalQuestionFinance')">
+                        <i class="fa-solid fa-xmark me-1"></i> No
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalQuestionFinanceReg" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+            <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                <i class="fa-solid fa-coins fa-3x mb-2 text-warning"></i>
+                <h4 class="fw-bold mb-0">Finance Verification</h4>
+            </div>
+            <div class="modal-body p-4">
+                <h5 class="fw-semibold text-dark mb-4">Are you a registered Finance?</h5>
+                <div class="d-flex justify-content-center gap-3">
+                    <button type="button" class="btn btn-grc px-4 py-2 fw-bold" onclick="openLoginForFinance()">
+                        <i class="fa-solid fa-check me-1"></i> Yes
+                    </button>
+                    <button type="button" class="btn btn-outline-danger px-4 py-2 fw-bold" onclick="openRegisterForFinance()">
+                        <i class="fa-solid fa-xmark me-1"></i> No
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+    <!-- Portal Capabilities -->
     <section class="py-5">
         <div class="container">
             <h2 class="text-center fw-bold mb-5 text-dark">Portal Capabilities</h2>
@@ -617,28 +1068,53 @@ if (isset($_GET['login_error'])) {
                 <div class="modal-body p-4">
                     <div class="row g-3">
                         <?php if (count($announcements) > 0): ?>
-                            <?php foreach ($announcements as $announcement): ?>
-                                <div class="col-12">
-                                    <div class="card announcement-card p-2 shadow-sm" 
-                                         style="cursor: pointer;"
-                                         data-bs-toggle="modal" 
-                                         data-bs-target="#announcementModal"
-                                         data-title="<?= htmlspecialchars($announcement['title']) ?>"
-                                         data-date="<?= date('M d, Y', strtotime($announcement['created_at'])) ?>"
-                                         data-content="<?= htmlspecialchars($announcement['content']) ?>">
-                                        <div class="card-body d-flex flex-column">
-                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <h5 class="card-title fw-bold text-dark mb-0"><?= htmlspecialchars($announcement['title']) ?></h5>
-                                                <span class="badge bg-secondary">
-                                                    <?= date('M d, Y', strtotime($announcement['created_at'])) ?>
-                                                </span>
-                                            </div>
-                                            <p class="card-text text-muted small text-truncate mb-2"><?= htmlspecialchars($announcement['content']) ?></p>
-                                            <span class="small grc-link">Read Full Announcement <i class="bi bi-arrow-right"></i></span>
-                                        </div>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
+                            <?php foreach ($announcements as $announcement): 
+    $priority = $announcement['priority'] ?? 'Normal';
+    $priorityClass = 'bg-secondary';
+    if ($priority === 'Urgent')      $priorityClass = 'bg-danger';
+    elseif ($priority === 'Important') $priorityClass = 'bg-warning text-dark';
+
+    $borderClass = 'announcement-card';
+    if ($priority === 'Urgent')       $borderClass .= ' ann-urgent';
+    elseif ($priority === 'Important')$borderClass .= ' ann-important';
+?>
+    <div class="col-12">
+        <div class="card <?= $borderClass ?> p-2 shadow-sm" 
+             style="cursor: pointer;"
+             data-bs-toggle="modal" 
+             data-bs-target="#announcementModal"
+             data-title="<?= htmlspecialchars($announcement['title']) ?>"
+             data-date="<?= date('M d, Y', strtotime($announcement['created_at'])) ?>"
+             data-content="<?= htmlspecialchars($announcement['content']) ?>">
+            <div class="card-body d-flex flex-column">
+                <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-1">
+                    <h5 class="card-title fw-bold text-dark mb-0">
+                        <?php if (!empty($announcement['is_pinned'])): ?>
+                            <i class="bi bi-pin-angle-fill text-danger me-1"></i>
+                        <?php else: ?>
+                            <i class="bi bi-megaphone-fill text-danger me-1"></i>
+                        <?php endif; ?>
+                        <?= htmlspecialchars($announcement['title']) ?>
+                    </h5>
+                    <div class="d-flex gap-1">
+                        <span class="badge bg-light text-dark border"><?= htmlspecialchars($announcement['category'] ?? 'General') ?></span>
+                        <span class="badge <?= $priorityClass ?>"><?= htmlspecialchars($priority) ?></span>
+                    </div>
+                </div>
+                <p class="card-text text-muted small mb-2"><?= htmlspecialchars(mb_strimwidth($announcement['content'], 0, 140, '...')) ?></p>
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="small grc-link">Read Full Announcement <i class="bi bi-arrow-right"></i></span>
+                    <small class="text-muted" style="font-size: 0.72rem;">
+                        <?= date('M d, Y', strtotime($announcement['created_at'])) ?>
+                        <?php if (!empty($announcement['posted_by'])): ?>
+                            · <?= htmlspecialchars($announcement['posted_by']) ?>
+                        <?php endif; ?>
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+<?php endforeach; ?>
                         <?php else: ?>
                             <div class="col-12">
                                 <div class="alert alert-info border-0 shadow-sm mb-0">No announcements published at this time.</div>
@@ -650,25 +1126,182 @@ if (isset($_GET['login_error'])) {
         </div>
     </div>
 
-    <!-- MODAL 1: LOGIN POPUP -->
+    <!-- MODAL: INDIVIDUAL ANNOUNCEMENT DETAILS -->
+    <div class="modal fade" id="announcementModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg" style="border-radius: 16px;">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold text-dark" id="modalAnnTitle">Announcement Title</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <div class="text-muted small mb-3"><i class="bi bi-calendar3 me-1"></i> <span id="modalAnnDate"></span></div>
+                    <p class="text-secondary" id="modalAnnContent" style="white-space: pre-wrap;"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: CONTACT US -->
+    <div class="modal fade" id="contactModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content modal-dark-custom shadow-lg">
+                <div class="modal-header border-bottom border-secondary pb-3">
+                    <h5 class="modal-title fw-bold text-white"><i class="bi bi-envelope-fill me-2 text-danger"></i>Contact Administration</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <form>
+                        <div class="mb-3">
+                            <label class="form-label small text-light">Your Full Name</label>
+                            <input type="text" class="form-control bg-dark text-white border-secondary" placeholder="John Doe">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small text-light">Email Address</label>
+                            <input type="email" class="form-control bg-dark text-white border-secondary" placeholder="name@example.com">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small text-light">Message / Inquiry</label>
+                            <textarea class="form-control bg-dark text-white border-secondary" rows="4" placeholder="Type your message here..."></textarea>
+                        </div>
+                        <button type="button" class="btn btn-grc w-100 py-2 fw-bold" data-bs-dismiss="modal">Send Message</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: ABOUT GRC -->
+    <div class="modal fade" id="aboutModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content modal-dark-custom shadow-lg">
+                <div class="modal-header border-bottom border-secondary pb-3">
+                    <h4 class="modal-title fw-bold text-white"><i class="bi bi-building me-2 text-danger"></i>About Global Reciprocal Colleges</h4>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <p class="text-light opacity-75"><b>Global Reciprocal Colleges is committed to providing accessible, high-quality education to empower young minds and nurture future industry leaders.</b></p>
+                    <div class="row g-3 mt-2">
+                        <div class="col-md-6">
+                            <div class="p-3 about-card-dark h-100">
+                                <h6 class="fw-bold text-danger mb-2"><i class="bi bi-eye me-2"></i>Vision</h6>
+                                <p class="small text-light opacity-75 mb-0"><b>“A global community of excellent individuals with values.”</b></p>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="p-3 about-card-dark h-100">
+                                <h6 class="fw-bold text-danger mb-2"><i class="bi bi-compass me-2"></i>Mission</h6>
+                                <p class="small text-light opacity-75 mb-0"><b>“GRC is creating a culture for successful, socially responsible, morally upright skilled workers and highly competent professionals through values-based quality education.”</b></p>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="p-3 about-card-dark h-100">
+                                <h6 class="fw-bold text-danger mb-2"><i class="bi bi-postcard-heart me-2"></i>Core Values</h6>
+                                <p class="small text-light opacity-75 mb-0"><b>God-Fearing, Reciprocating, Committing to Excellence.</b></p>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="p-3 about-card-dark h-100">
+                                <h6 class="fw-bold text-danger mb-2"><i class="bi bi-bullseye me-2"></i>PHILOSOPHY</h6>
+                                <p class="small text-light opacity-75 mb-0"><b>Touching Hearts, Renewing Minds, Transforming Lives.</b></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="modalQuestion1" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+            <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                <i class="fa-solid fa-circle-question fa-3x mb-2 text-warning"></i>
+                <h4 class="fw-bold mb-0">Portal Access Verification</h4>
+            </div>
+            <div class="modal-body p-4">
+                <h5 class="fw-semibold text-dark mb-4">Are you a Student?</h5>
+                <div class="d-flex justify-content-center gap-3">
+                    <!-- YES → Student branch -->
+                    <button type="button"
+                            class="btn btn-grc px-4 py-2 fw-bold"
+                            onclick="chooseStudentBranch()">
+                        <i class="fa-solid fa-check me-1"></i> Yes
+                    </button>
+                    <!-- NO → Intermediate department question -->
+                    <button type="button"
+                            class="btn btn-outline-danger px-4 py-2 fw-bold"
+                            onclick="chooseDepartmentBranch()">
+                        <i class="fa-solid fa-xmark me-1"></i> No
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+    <div class="modal fade" id="modalQuestionStudent" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+                <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                    <i class="fa-solid fa-user-graduate fa-3x mb-2 text-warning"></i>
+                    <h4 class="fw-bold mb-0">Student Verification</h4>
+                </div>
+                <div class="modal-body p-4">
+                    <h5 class="fw-semibold text-dark mb-4">Are you a registered student?</h5>
+                    <div class="d-flex justify-content-center gap-3">
+                        <button class="btn btn-grc px-4 py-2 fw-bold" data-bs-target="#loginModal" data-bs-toggle="modal">
+                            <i class="fa-solid fa-check me-1"></i> Yes
+                        </button>
+                        <button class="btn btn-outline-danger px-4 py-2 fw-bold" data-bs-target="#registerModal" data-bs-toggle="modal">
+                            <i class="fa-solid fa-xmark me-1"></i> No
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="modalQuestionDept" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg text-center" style="border-radius: 16px;">
+                <div class="p-4 text-white" style="background: linear-gradient(135deg, var(--grc-dark) 0%, var(--grc-primary) 100%); border-top-left-radius: 16px; border-top-right-radius: 16px;">
+                    <i class="fa-solid fa-building-user fa-3x mb-2 text-warning"></i>
+                    <h4 class="fw-bold mb-0">Department Verification</h4>
+                </div>
+                <div class="modal-body p-4">
+                    <h5 class="fw-semibold text-dark mb-4">Are you a registered department?</h5>
+                    <div class="d-flex justify-content-center gap-3">
+                        <button class="btn btn-grc px-4 py-2 fw-bold" data-bs-target="#loginModal" data-bs-toggle="modal">
+                            <i class="fa-solid fa-check me-1"></i> Yes
+                        </button>
+                        <button class="btn btn-outline-danger px-4 py-2 fw-bold" data-bs-target="#registerModal" data-bs-toggle="modal">
+                            <i class="fa-solid fa-xmark me-1"></i> No
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL LOGIN -->
     <div class="modal fade" id="loginModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-0 shadow-lg" style="border-radius: 16px; overflow: hidden;">
                 <div class="p-4 text-center text-white" style="background: linear-gradient(135deg, var(--grc-primary) 0%, var(--grc-secondary) 100%); border-bottom: 4px solid var(--grc-hover);">
                     <button type="button" class="btn-close btn-close-white float-end" data-bs-dismiss="modal" aria-label="Close"></button>
-                    <img src="assets/grc4.png" alt="GRC Logo" class="mb-2" style="height: 55px; width: auto; object-fit: contain;">
+                    <img src="assets/grc4.png" alt="GRC Logo" class="mb-2" style="height: 55px;">
                     <h4 class="mb-0 fw-bold">Global Reciprocal Colleges</h4>
-                    <small style="color: #ffcccc; font-weight: 600; letter-spacing: 1px;">STUDENT & FACULTY PORTAL LOGIN</small>
+                    <small style="color: #ffcccc; font-weight: 600;">STUDENT & FACULTY PORTAL LOGIN</small>
                 </div>
                 <div class="modal-body p-4">
-                    
                     <?php if (isset($_GET['login_error'])): ?>
                         <div class="alert alert-danger py-2 bg-danger bg-opacity-10 text-danger border-0 rounded-3 small mb-3">
                             <i class="fa-solid fa-circle-exclamation me-1"></i>
                             <?php 
                                 $err = $_GET['login_error'];
                                 if ($err == 'invalid') echo "Invalid username or password.";
-                                elseif ($err == 'locked') echo "Your account has been locked due to multiple failed login attempts.";
+                                elseif ($err == 'locked') echo "Your account has been locked.";
                                 elseif ($err == 'empty') echo "Please enter both username and password.";
                                 elseif ($err == 'expired') echo "Session expired. Please log in again.";
                             ?>
@@ -691,12 +1324,16 @@ if (isset($_GET['login_error'])) {
                         </div>
                         
                         <div class="mb-3">
-                            <label class="form-label fw-semibold text-dark small">Password</label>
-                            <div class="input-group">
-                                <span class="input-group-text"><i class="fa-solid fa-lock"></i></span>
-                                <input type="password" class="form-control" name="password" required placeholder="Enter password">
-                            </div>
-                        </div>
+    <label class="form-label fw-semibold text-dark small">Password</label>
+    <div class="input-group">
+        <span class="input-group-text"><i class="fa-solid fa-lock"></i></span>
+        <input type="password" class="form-control" name="password" id="loginPassword" required placeholder="Enter password">
+        <button type="button" class="btn btn-outline-secondary password-toggle-btn" id="togglePasswordBtn"
+                aria-label="Show password" title="Show password">
+            <i class="fa-solid fa-eye" id="togglePasswordIcon"></i>
+        </button>
+    </div>
+</div>
 
                         <div class="d-flex justify-content-between align-items-center mb-4">
                             <div class="form-check">
@@ -718,9 +1355,9 @@ if (isset($_GET['login_error'])) {
         </div>
     </div>
 
-    <!-- MODAL 2: REGISTER POPUP -->
+    <!-- MODAL REGISTER -->
     <div class="modal fade" id="registerModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content border-0 shadow-lg" style="border-radius: 16px;">
                 <div class="modal-header border-0 pb-0">
                     <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -739,87 +1376,128 @@ if (isset($_GET['login_error'])) {
                     <?php endif; ?>
 
                     <?php if ($reg_step === 1): ?>
-                        <p class="text-secondary small text-center mb-3">Fill in your details to register as a Student, Professor, or Department User.</p>
-                        
-                        <form method="POST">
-                            <input type="hidden" name="action" value="reg_submit_details">
-                            <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token']; ?>">
-                            
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label small fw-semibold text-dark">Role</label>
-                                    <select name="role" id="roleSelect" class="form-select form-select-sm" required>
-                                        <option value="Student">Student</option>
-                                        <option value="Professor">Professor / Faculty</option>
-                                        <option value="Department">Department</option>
-                                    </select>
-                                </div>
-                                <div class="col-6">
-                                    <label id="idLabel" class="form-label small fw-semibold text-dark">Student ID</label>
-                                    <input type="text" name="student_id" id="idInput" class="form-control form-control-sm" required placeholder="20XX-XX-XXXXX">
-                                </div>
-                            </div>
+                        <p class="text-secondary small text-center mb-3">Fill in your details to register. Students must match their Admin Master List ID.</p>
 
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label small fw-semibold text-dark">First Name</label>
-                                    <input type="text" name="first_name" class="form-control form-control-sm" required placeholder="First Name">
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label small fw-semibold text-dark">Last Name</label>
-                                    <input type="text" name="last_name" class="form-control form-control-sm" required placeholder="Last Name">
-                                </div>
-                            </div>
+<!-- STEP 1: Registration Form inside index.php -->
+<form method="POST">
+    <input type="hidden" name="action" value="reg_submit_details">
+    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token']; ?>">
+    
+    <div class="row g-2 mb-3">
+        <!-- Role Select Field -->
+        <div class="col-md-6">
+            <label class="form-label small fw-semibold text-dark">Role</label>
+            <select name="role" id="roleSelect" class="form-select form-select-sm" required>
+                <?php $sel_role = $old['role'] ?? 'Student'; ?>
+                <option value="Student" <?= $sel_role === 'Student' ? 'selected' : '' ?>>Student</option>
+<option value="Professor" <?= $sel_role === 'Professor' ? 'selected' : '' ?>>Professor / Faculty</option>
+<option value="Department" <?= $sel_role === 'Department' ? 'selected' : '' ?>>Department / Admin</option>
+<option value="finance" <?= $sel_role === 'finance' ? 'selected' : '' ?>>Finance Office</option>
+            </select>
+        </div>
 
-                            <div class="mb-3">
-                                <label class="form-label small fw-semibold text-dark">Username</label>
-                                <input type="text" name="username" class="form-control form-control-sm" required placeholder="Username">
-                            </div>
+        <!-- Student ID Field with Check ID Button -->
+        <div class="col-md-6">
+            <label id="idLabel" class="form-label small fw-semibold text-dark">Student ID Number</label>
+            <div class="input-group input-group-sm">
+                <input type="text" name="student_id" id="idInput" class="form-control" required placeholder="e.g. 2024-01-00001" value="<?= htmlspecialchars($old['student_id'] ?? ''); ?>">
+                <button type="button" id="btnCheckID" class="btn btn-outline-danger fw-semibold px-2">
+                    <i class="fa-solid fa-magnifying-glass me-1"></i> Check ID
+                </button>
+            </div>
+            <span id="idHelpText" class="text-muted d-block mt-1" style="font-size: 0.72rem;">Must be registered in Admin Master List.</span>
+        </div>
+    </div>
 
-                            <div class="mb-3">
-                                <label class="form-label small fw-semibold text-dark">Email Address</label>
-                                <input type="email" id="regEmailInput" name="email" class="form-control form-control-sm" required placeholder="user@grc.edu.ph" value="<?= htmlspecialchars($_SESSION['reg_email'] ?? ''); ?>">
-                            </div>
+    <!-- First Name and Last Name Inputs -->
+    <div class="row g-2 mb-3">
+        <div class="col-6">
+            <label class="form-label small fw-semibold text-dark">First Name</label>
+            <input type="text" name="first_name" id="firstNameInput" class="form-control form-control-sm" required placeholder="First Name" value="<?= htmlspecialchars($old['first_name'] ?? ''); ?>">
+        </div>
+        <div class="col-6">
+            <label class="form-label small fw-semibold text-dark">Last Name</label>
+            <input type="text" name="last_name" id="lastNameInput" class="form-control form-control-sm" required placeholder="Last Name" value="<?= htmlspecialchars($old['last_name'] ?? ''); ?>">
+        </div>
+    </div>
 
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label small fw-semibold text-dark">Phone Number</label>
-                                    <input type="text" name="phone" class="form-control form-control-sm" required placeholder="09123456789">
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label small fw-semibold text-dark">Course / Dept</label>
-                                    <input type="text" name="department_course" class="form-control form-control-sm" required placeholder="BSIT / CCS">
-                                </div>
-                            </div>
+    <!-- Department & Course -->
+    <div class="row g-2 mb-3">
+        <div class="col-6">
+            <label class="form-label small fw-semibold text-dark">Department</label>
+            <select name="department" id="deptSelect" class="form-select form-select-sm" required>
+                <option value="">-- Select Department --</option>
+                <option value="College of Computer Studies">College of Computer Studies</option>
+                <option value="College of Business Administration">College of Business Administration</option>
+                <option value="College of Education">College of Education</option>
+                <option value="College of Accountancy">College of Accountancy</option>
+            </select>
+        </div>
+        <div class="col-6" id="courseContainer">
+            <label class="form-label small fw-semibold text-dark">Course / Degree</label>
+            <select name="course" id="courseSelect" class="form-select form-select-sm">
+                <option value="">-- Select Course --</option>
+            </select>
+        </div>
+    </div>
 
-                            <div class="mb-2">
-                                <label class="form-label small fw-semibold text-dark">Password</label>
-                                <input type="password" id="regPassInput" name="password" class="form-control form-control-sm" required>
-                            </div>
+    <div class="row g-2 mb-3">
+        <div class="col-6">
+            <label class="form-label small fw-semibold text-dark">Username</label>
+            <input type="text" name="username" class="form-control form-control-sm" required placeholder="Username" value="<?= htmlspecialchars($old['username'] ?? ''); ?>">
+        </div>
+        <div class="col-6">
+            <label class="form-label small fw-semibold text-dark">Phone Number</label>
+            <input type="text" name="phone" class="form-control form-control-sm" required placeholder="09123456789" value="<?= htmlspecialchars($old['phone'] ?? ''); ?>">
+        </div>
+    </div>
 
-                            <div class="progress mb-2" style="height: 6px; background-color: #e9ecef;">
-                                <div id="regStrengthBar" class="progress-bar" role="progressbar" style="width: 0%;"></div>
-                            </div>
-                            <div class="d-flex justify-content-between mb-3">
-                                <span class="small text-muted" style="font-size: 0.75rem;">Strength:</span>
-                                <span id="regStrengthText" class="fw-bold small" style="font-size: 0.75rem; color: #888;">Weak</span>
-                            </div>
+    <div class="mb-3">
+        <label class="form-label small fw-semibold text-dark">Email Address</label>
+        <input type="email" id="regEmailInput" name="email" class="form-control form-control-sm" required placeholder="user@grc.edu.ph" value="<?= htmlspecialchars($old['email'] ?? ($_SESSION['reg_email'] ?? '')); ?>">
+    </div>
 
-                            <div class="mb-2">
-                                <label class="form-label small fw-semibold text-dark">Confirm Password</label>
-                                <input type="password" id="regConfirmPassInput" name="confirm_password" class="form-control form-control-sm" required>
-                            </div>
+    <div class="mb-2">
+    <label class="form-label small fw-semibold text-dark">Password</label>
+    <div class="input-group input-group-sm">
+        <input type="password" id="regPassInput" name="password" class="form-control form-control-sm" required>
+        <button type="button" class="btn btn-outline-secondary password-toggle-btn" id="toggleRegPassBtn"
+                aria-label="Show password" title="Show password">
+            <i class="fa-solid fa-eye" id="toggleRegPassIcon"></i>
+        </button>
+    </div>
+</div>
 
-                            <div class="progress mb-2" style="height: 6px; background-color: #e9ecef;">
-                                <div id="regMatchBar" class="progress-bar" role="progressbar" style="width: 0%;"></div>
-                            </div>
-                            <div class="d-flex justify-content-between mb-4">
-                                <span class="small text-muted" style="font-size: 0.75rem;">Match:</span>
-                                <span id="regMatchStatusText" class="fw-bold small" style="font-size: 0.75rem; color: #888;">Not Matching</span>
-                            </div>
+    <div class="progress mb-1" style="height: 6px;">
+        <div id="regStrengthBar" class="progress-bar" role="progressbar" style="width: 0%;"></div>
+    </div>
+    <div class="d-flex justify-content-between mb-1">
+        <span class="small text-muted" style="font-size: 0.72rem;">Strength:</span>
+        <span id="regStrengthText" class="fw-bold small" style="font-size: 0.72rem; color: #888;">Weak</span>
+    </div>
+    <div class="text-muted mb-3" style="font-size: 0.72rem;">Password must be at least 8 characters with upper, lower, number, and special character.</div>
 
-                            <button type="submit" class="btn btn-grc w-100 py-2.5 fw-bold"><i class="fa-solid fa-paper-plane me-1"></i> Register & Send OTP</button>
-                        </form>
+    <div class="mb-2">
+    <label class="form-label small fw-semibold text-dark">Confirm Password</label>
+    <div class="input-group input-group-sm">
+        <input type="password" id="regConfirmPassInput" name="confirm_password" class="form-control form-control-sm" required>
+        <button type="button" class="btn btn-outline-secondary password-toggle-btn" id="toggleRegConfirmBtn"
+                aria-label="Show password" title="Show password">
+            <i class="fa-solid fa-eye" id="toggleRegConfirmIcon"></i>
+        </button>
+    </div>
+</div>
+
+    <div class="progress mb-1" style="height: 6px;">
+        <div id="regMatchBar" class="progress-bar" role="progressbar" style="width: 0%;"></div>
+    </div>
+    <div class="d-flex justify-content-between mb-3">
+        <span class="small text-muted" style="font-size: 0.72rem;">Match:</span>
+        <span id="regMatchStatusText" class="fw-bold small" style="font-size: 0.72rem; color: #888;">Not Matching</span>
+    </div>
+
+    <button type="submit" class="btn btn-grc w-100 py-2.5 fw-bold"><i class="fa-solid fa-paper-plane me-1"></i> Register & Send OTP</button>
+</form>
                     <?php else: ?>
                         <p class="text-secondary small text-center mb-3">Enter the 6-digit OTP sent to <strong><?= htmlspecialchars($_SESSION['reg_email'] ?? ''); ?></strong></p>
                         
@@ -850,7 +1528,7 @@ if (isset($_GET['login_error'])) {
         </div>
     </div>
 
-    <!-- MODAL 3: FORGOT PASSWORD POPUP -->
+    <!-- MODAL FORGOT PASSWORD -->
     <div class="modal fade" id="forgotModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-0 shadow-lg" style="border-radius: 16px;">
@@ -871,7 +1549,6 @@ if (isset($_GET['login_error'])) {
                     <?php endif; ?>
 
                     <?php if ($forgot_step === 1): ?>
-                        <!-- STEP 1: Enter Email -->
                         <p class="text-secondary small text-center mb-4">Enter your registered email address to receive a 6-digit OTP code.</p>
                         <form method="POST">
                             <input type="hidden" name="action" value="forgot_send_otp">
@@ -888,7 +1565,6 @@ if (isset($_GET['login_error'])) {
                         </form>
 
                     <?php elseif ($forgot_step === 2): ?>
-                        <!-- STEP 2: Verify OTP Only -->
                         <div class="d-flex justify-content-between align-items-center mb-3 p-2 bg-light rounded border">
                             <small class="text-muted text-truncate me-2">
                                 Sent to: <strong><?= htmlspecialchars($_SESSION['reset_email'] ?? ''); ?></strong>
@@ -914,7 +1590,6 @@ if (isset($_GET['login_error'])) {
                         </form>
 
                     <?php elseif ($forgot_step === 3): ?>
-                        <!-- STEP 3: Create New Password (Only shown after valid OTP) -->
                         <p class="text-secondary small text-center mb-3">OTP verified. Please enter your new password below.</p>
 
                         <form method="POST">
@@ -922,11 +1597,17 @@ if (isset($_GET['login_error'])) {
                             <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token']; ?>">
                             
                             <div class="mb-2">
-                                <label class="form-label small fw-semibold text-dark">New Password</label>
-                                <input type="password" id="forgotPassInput" name="new_password" class="form-control" required placeholder="Enter new password">
-                            </div>
+    <label class="form-label small fw-semibold text-dark">New Password</label>
+    <div class="input-group">
+        <input type="password" id="forgotPassInput" name="new_password" class="form-control" required placeholder="Enter new password">
+        <button type="button" class="btn btn-outline-secondary password-toggle-btn" id="toggleForgotPassBtn"
+                aria-label="Show password" title="Show password">
+            <i class="fa-solid fa-eye" id="toggleForgotPassIcon"></i>
+        </button>
+    </div>
+</div>
 
-                            <div class="progress mb-2" style="height: 6px; background-color: #e9ecef;">
+                            <div class="progress mb-2" style="height: 6px;">
                                 <div id="forgotStrengthBar" class="progress-bar" role="progressbar" style="width: 0%;"></div>
                             </div>
                             <div class="d-flex justify-content-between mb-3">
@@ -935,11 +1616,17 @@ if (isset($_GET['login_error'])) {
                             </div>
 
                             <div class="mb-2">
-                                <label class="form-label small fw-semibold text-dark">Confirm New Password</label>
-                                <input type="password" id="forgotConfirmPassInput" name="confirm_password" class="form-control" required placeholder="Confirm new password">
-                            </div>
+    <label class="form-label small fw-semibold text-dark">Confirm New Password</label>
+    <div class="input-group">
+        <input type="password" id="forgotConfirmPassInput" name="confirm_password" class="form-control" required placeholder="Confirm new password">
+        <button type="button" class="btn btn-outline-secondary password-toggle-btn" id="toggleForgotConfirmBtn"
+                aria-label="Show password" title="Show password">
+            <i class="fa-solid fa-eye" id="toggleForgotConfirmIcon"></i>
+        </button>
+    </div>
+</div>
 
-                            <div class="progress mb-2" style="height: 6px; background-color: #e9ecef;">
+                            <div class="progress mb-2" style="height: 6px;">
                                 <div id="forgotMatchBar" class="progress-bar" role="progressbar" style="width: 0%;"></div>
                             </div>
                             <div class="d-flex justify-content-between mb-4">
@@ -959,92 +1646,6 @@ if (isset($_GET['login_error'])) {
         </div>
     </div>
 
-    <!-- About Us Pop-up Modal -->
-    <div class="modal fade" id="aboutModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-centered">
-            <div class="modal-content modal-dark-custom p-3 p-lg-4">
-                <div class="modal-header border-0 pb-0">
-                    <button type="button" class="btn-close btn-close-white ms-auto" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="row g-4 align-items-center">
-                        <div class="col-lg-6">
-                            <div class="pe-lg-3">
-                                <h2 class="fw-bold mb-3 text-white d-flex align-items-center gap-2">
-                                    <i class="bi bi-bank text-accent"></i>
-                                    <span>About Global Reciprocal Colleges</span>
-                                </h2>
-                                <h5 class="fw-bold text-accent mb-3">
-                                    Building a brighter future through quality, accessible higher education.
-                                </h5>
-                                <p class="text-secondary mb-3">
-                                    Global Reciprocal Colleges (GRC) is an educational institution dedicated to providing accessible, high-quality, and values-oriented tertiary education.
-                                </p>
-                            </div>
-                        </div>
-                        <div class="col-lg-6">
-                            <div class="row g-3">
-                                <div class="col-sm-6">
-                                    <div class="card about-card-dark h-100 p-3">
-                                        <div class="card-body">
-                                            <i class="bi bi-bullseye text-accent fs-3 mb-2 d-block"></i>
-                                            <h5 class="fw-bold text-white mb-2">Our Mission</h5>
-                                            <p class="text-secondary small mb-0">“GRC is creating a culture for successful, socially responsible, morally upright skilled workers and highly competent professionals through values-based quality education.”</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="col-sm-6">
-                                    <div class="card about-card-dark h-100 p-3">
-                                        <div class="card-body">
-                                            <i class="bi bi-eye-fill text-accent fs-3 mb-2 d-block"></i>
-                                            <h5 class="fw-bold text-white mb-2">Our Vision</h5>
-                                            <p class="text-secondary small mb-0">“A global community of excellent individuals with values.”</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="col-sm-6">
-                                    <div class="card about-card-dark h-100 p-3">
-                                        <div class="card-body">
-                                            <i class="bi bi-gem text-accent fs-3 mb-2 d-block"></i>
-                                            <h5 class="fw-bold text-white mb-2">Core Values</h5>
-                                            <p class="text-secondary small mb-0">“God-Fearing, Reciprocating, Committing to Excellence.”</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="col-sm-6">
-                                    <div class="card about-card-dark h-100 p-3">
-                                        <div class="card-body">
-                                            <i class="bi bi-lightbulb-fill text-accent fs-3 mb-2 d-block"></i>
-                                            <h5 class="fw-bold text-white mb-2">Philosophy</h5>
-                                            <p class="text-secondary small mb-0">“Touching Hearts, Renewing Minds, Transforming Lives.”</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- MODAL 4: ANNOUNCEMENT POPUP DETAIL -->
-    <div class="modal fade" id="announcementModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg" style="border-radius: 16px;">
-                <div class="modal-header border-0 pb-0">
-                    <span class="badge bg-secondary" id="modalAnnDate"></span>
-                    <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body p-4 pt-2">
-                    <h4 class="fw-bold text-dark mb-3" id="modalAnnTitle"></h4>
-                    <hr class="text-muted opacity-25">
-                    <p class="text-secondary mb-0" id="modalAnnContent" style="white-space: pre-line;"></p>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Footer -->
     <footer class="mt-auto py-4" style="background-color: var(--grc-dark); color: #ffffff;">
         <div class="container text-center">
@@ -1057,112 +1658,609 @@ if (isset($_GET['login_error'])) {
 
     <script>
     document.addEventListener('DOMContentLoaded', () => {
-        const activeModal = "<?= $active_modal ?>";
-        if (activeModal === 'login') {
-            const loginModal = new bootstrap.Modal(document.getElementById('loginModal'));
-            loginModal.show();
-            if (window.history.replaceState) {
-                window.history.replaceState(null, null, window.location.pathname);
-            }
-        } else if (activeModal === 'register') {
-            new bootstrap.Modal(document.getElementById('registerModal')).show();
-        } else if (activeModal === 'forgot') {
-            new bootstrap.Modal(document.getElementById('forgotModal')).show();
-        }
+    // Handle Active Modal Trigger
+    const activeModal = "<?= $active_modal ?>";
+    if (activeModal === 'login') {
+        new bootstrap.Modal(document.getElementById('loginModal')).show();
+    } else if (activeModal === 'register') {
+        new bootstrap.Modal(document.getElementById('registerModal')).show();
+    } else if (activeModal === 'forgot') {
+        new bootstrap.Modal(document.getElementById('forgotModal')).show();
+    }
 
-        const annModal = document.getElementById('announcementModal');
-        if (annModal) {
-            annModal.addEventListener('show.bs.modal', (event) => {
-                const card = event.relatedTarget;
-                const title = card.getAttribute('data-title');
-                const date = card.getAttribute('data-date');
-                const content = card.getAttribute('data-content');
+    // Dynamic Department & Course Setup
+    const deptSelect = document.getElementById('deptSelect');
+    const courseSelect = document.getElementById('courseSelect');
+    const coursesByDept = {
+        "College of Computer Studies": ["BSIT - BS Information Technology"],
+        "College of Business Administration": [
+            "BSBA Financial Management",
+            "BSBA Marketing Management",
+            "BSBA Human Resource Management"
+        ],
+        "College of Education": [
+            "BSED - Bachelor of Secondary Education",
+            "BEED - Bachelor of Elementary Education"
+        ],
+        "College of Accountancy": ["BSA - BS Accountancy"],
+        "Non-Academic Department": [
+            "Administration Office",
+            "IT Support & Systems",
+            "Registrar",
+            "Accounting & Finance"
+        ]
+    };
 
-                document.getElementById('modalAnnTitle').textContent = title;
-                document.getElementById('modalAnnDate').textContent = date;
-                document.getElementById('modalAnnContent').textContent = content;
+    function updateCourses() {
+        if (!deptSelect || !courseSelect) return;
+        const selectedDept = deptSelect.value;
+        courseSelect.innerHTML = '<option value="">-- Select Option --</option>';
+        if (coursesByDept[selectedDept]) {
+            coursesByDept[selectedDept].forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c;
+                opt.textContent = c;
+                courseSelect.appendChild(opt);
             });
         }
+    }
 
-        const roleSelect = document.getElementById('roleSelect');
-        const idLabel = document.getElementById('idLabel');
-        const idInput = document.getElementById('idInput');
-        if (roleSelect) {
-            roleSelect.addEventListener('change', () => {
-                if (roleSelect.value === 'Department') {
-                    idLabel.textContent = 'Dept ID';
-                    idInput.placeholder = 'DEP-20XX-XXX';
-                } else if (roleSelect.value === 'Professor') {
-                    idLabel.textContent = 'Faculty ID';
-                    idInput.placeholder = 'FAC-20XX-XXX';
-                } else {
-                    idLabel.textContent = 'Student ID';
-                    idInput.placeholder = '2024-08-01129';
-                }
-            });
+    if (deptSelect) {
+        deptSelect.addEventListener('change', updateCourses);
+    }
+
+    // 1. Dynamic Role Change Listener
+const roleSelect = document.getElementById('roleSelect');
+const idLabel = document.getElementById('idLabel');
+const idInput = document.getElementById('idInput');
+const idHelpText = document.getElementById('idHelpText');
+
+if (roleSelect) {
+    roleSelect.addEventListener('change', () => {
+        const val = roleSelect.value;
+
+        if (val === 'Department') {
+            idLabel.textContent = 'Dept / Employee ID';
+            idInput.placeholder = 'DEP-2024-001';
+            idHelpText.textContent = 'No master list verification needed for this role.';
+            idHelpText.className = 'text-muted d-block mt-1';
+            if (btnCheckID) btnCheckID.classList.add('d-none');
+            firstNameInput.readOnly = false;
+            lastNameInput.readOnly = false;
+            deptSelect.innerHTML = `<option value="Non-Academic Department">Non-Academic / Administrative Office</option>`;
+            updateCourses();
+
+        } else if (val === 'Professor') {
+            idLabel.textContent = 'Faculty ID';
+            idInput.placeholder = 'FAC-2024-001';
+            idHelpText.textContent = 'No master list verification needed for this role.';
+            idHelpText.className = 'text-muted d-block mt-1';
+            if (btnCheckID) btnCheckID.classList.add('d-none');
+            firstNameInput.readOnly = false;
+            lastNameInput.readOnly = false;
+            deptSelect.innerHTML = `
+                <option value="">-- Select Faculty Department --</option>
+                <option value="College of Computer Studies">College of Computer Studies</option>
+                <option value="College of Business Administration">College of Business Administration</option>
+                <option value="College of Education">College of Education</option>
+                <option value="College of Accountancy">College of Accountancy</option>
+            `;
+            updateCourses();
+
+        } else if (val === 'finance') {
+            /* ============================================================
+               FINANCE BRANCH — NEW
+               ------------------------------------------------------------
+               Finance staff do NOT have a Student ID, do NOT appear in
+               the Student Master List, and therefore do NOT need the
+               "Check ID" button. They only need a Finance ID + their
+               office/department name.
+               ============================================================ */
+            idLabel.textContent = 'Finance ID';
+            idInput.placeholder = 'FIN-08-2026';
+            idHelpText.textContent = 'No master list verification needed for this role.';
+            idHelpText.className = 'text-muted d-block mt-1';
+            if (btnCheckID) btnCheckID.classList.add('d-none');
+
+            firstNameInput.readOnly = false;
+            lastNameInput.readOnly = false;
+
+            // Finance belongs to a single office. Populate the department
+            // dropdown with the finance-specific options and no course list.
+            deptSelect.innerHTML = `
+                <option value="Finance Office">Finance Office</option>
+                <option value="Accounting Office">Accounting Office</option>
+                <option value="Cashiering Office">Cashiering Office</option>
+            `;
+
+            // Course is not applicable to Finance. Hide the course container.
+            const courseContainer = document.getElementById('courseContainer');
+            if (courseContainer) courseContainer.style.display = 'none';
+            courseSelect.innerHTML = '';
+
+        } else {
+            /* ------------------- Student branch (default) ------------------- */
+            idLabel.textContent = 'Student ID Number';
+            idInput.placeholder = 'e.g. 2024-01-00001';
+            idHelpText.textContent = 'Must be registered in Admin Master List.';
+            idHelpText.className = 'text-muted d-block mt-1';
+            if (btnCheckID) btnCheckID.classList.remove('d-none');
+
+            firstNameInput.readOnly = false;
+            lastNameInput.readOnly = false;
+
+            deptSelect.innerHTML = `
+                <option value="">-- Select Department --</option>
+                <option value="College of Computer Studies">College of Computer Studies</option>
+                <option value="College of Business Administration">College of Business Administration</option>
+                <option value="College of Education">College of Education</option>
+                <option value="College of Accountancy">College of Accountancy</option>
+            `;
+
+            // Ensure the course container is visible again for Students.
+            const courseContainer = document.getElementById('courseContainer');
+            if (courseContainer) courseContainer.style.display = '';
+
+            updateCourses();
         }
-
-        function bindPasswordValidator(passId, confirmId, barId, textId, matchBarId, matchTextId) {
-            const passInput = document.getElementById(passId);
-            const confirmInput = document.getElementById(confirmId);
-            const bar = document.getElementById(barId);
-            const text = document.getElementById(textId);
-            const matchBar = document.getElementById(matchBarId);
-            const matchText = document.getElementById(matchTextId);
-
-            if (!passInput) return;
-
-            passInput.addEventListener('input', () => {
-                const val = passInput.value;
-                let passed = 0;
-                if (/.{8,}/.test(val)) passed++;
-                if (/[A-Z]/.test(val)) passed++;
-                if (/[a-z]/.test(val)) passed++;
-                if (/\d/.test(val)) passed++;
-                if (/[!@#$%^&*(),.?":{}|<>]/.test(val)) passed++;
-
-                let percent = (passed / 5) * 100;
-                bar.style.width = percent + '%';
-
-                if (passed <= 2) {
-                    bar.className = 'progress-bar bg-danger';
-                    text.textContent = 'Weak';
-                    text.style.color = '#dc3545';
-                } else if (passed <= 4) {
-                    bar.className = 'progress-bar bg-warning';
-                    text.textContent = 'Medium';
-                    text.style.color = '#ffc107';
-                } else {
-                    bar.className = 'progress-bar bg-success';
-                    text.textContent = 'Strong';
-                    text.style.color = '#198754';
-                }
-            });
-
-            if (confirmInput && matchBar) {
-                confirmInput.addEventListener('input', () => {
-                    if (confirmInput.value.length === 0) {
-                        matchBar.style.width = '0%';
-                        matchText.textContent = 'Not Matching';
-                        matchText.style.color = '#888';
-                    } else if (passInput.value === confirmInput.value) {
-                        matchBar.style.width = '100%';
-                        matchBar.className = 'progress-bar bg-success';
-                        matchText.textContent = 'Passwords Match';
-                        matchText.style.color = '#198754';
-                    } else {
-                        matchBar.style.width = '100%';
-                        matchBar.className = 'progress-bar bg-danger';
-                        matchText.textContent = 'Do Not Match';
-                        matchText.style.color = '#dc3545';
-                    }
-                });
-            }
-        }
-
-        bindPasswordValidator('regPassInput', 'regConfirmPassInput', 'regStrengthBar', 'regStrengthText', 'regMatchBar', 'regMatchStatusText');
-        bindPasswordValidator('forgotPassInput', 'forgotConfirmPassInput', 'forgotStrengthBar', 'forgotStrengthText', 'forgotMatchBar', 'forgotMatchStatusText');
     });
+}
+
+// ... roleSelect change listener ...
+
+/* ---------- Reusable Show/Hide Password Toggle ---------- */
+function setupPasswordToggle(toggleBtnId, toggleIconId, passwordInputId) {
+    const btn   = document.getElementById(toggleBtnId);
+    const icon  = document.getElementById(toggleIconId);
+    const input = document.getElementById(passwordInputId);
+    if (!btn || !icon || !input) return;
+
+    btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const isHidden = input.type === 'password';
+        input.type = isHidden ? 'text' : 'password';
+
+        icon.classList.toggle('fa-eye', !isHidden);
+        icon.classList.toggle('fa-eye-slash', isHidden);
+
+        btn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+        btn.setAttribute('title',       isHidden ? 'Hide password' : 'Show password');
+
+        input.focus();
+    });
+
+    btn.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            btn.click();
+        }
+    });
+}
+
+/* ---------- Apply to Login Modal ---------- */
+setupPasswordToggle('togglePasswordBtn', 'togglePasswordIcon', 'loginPassword');
+
+/* ---------- Apply to Register Modal ---------- */
+setupPasswordToggle('toggleRegPassBtn',      'toggleRegPassIcon',      'regPassInput');
+setupPasswordToggle('toggleRegConfirmBtn',   'toggleRegConfirmIcon',   'regConfirmPassInput');
+
+/* ---------- Apply to Forgot Password Modal ---------- */
+setupPasswordToggle('toggleForgotPassBtn',    'toggleForgotPassIcon',    'forgotPassInput');
+setupPasswordToggle('toggleForgotConfirmBtn', 'toggleForgotConfirmIcon', 'forgotConfirmPassInput');
+
+// 2. Check Student ID Handler
+const btnCheckID = document.getElementById('btnCheckID');
+const firstNameInput = document.getElementById('firstNameInput');
+const lastNameInput = document.getElementById('lastNameInput');
+
+if (btnCheckID) {
+    btnCheckID.addEventListener('click', function(e) {
+        e.preventDefault();
+        const studentId = idInput.value.trim();
+
+        if (!studentId) {
+            idHelpText.textContent = 'Please enter a Student ID to verify.';
+            idHelpText.className = 'text-danger d-block mt-1';
+            return;
+        }
+
+        fetch(`check_student_id.php?student_id=${encodeURIComponent(studentId)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    firstNameInput.value = data.data.first_name || '';
+                    lastNameInput.value = data.data.last_name || '';
+
+                    if (data.data.department && deptSelect) {
+                        deptSelect.value = data.data.department;
+                        updateCourses();
+                        if (data.data.course && courseSelect) {
+                            courseSelect.value = data.data.course;
+                        }
+                    }
+
+                    idHelpText.textContent = '✓ ' + data.message;
+                    idHelpText.className = 'text-success d-block mt-1 fw-semibold';
+                    firstNameInput.readOnly = true;
+                    lastNameInput.readOnly = true;
+                } else {
+                    firstNameInput.value = '';
+                    lastNameInput.value = '';
+                    firstNameInput.readOnly = false;
+                    lastNameInput.readOnly = false;
+
+                    idHelpText.textContent = '✕ ' + data.message;
+                    idHelpText.className = 'text-danger d-block mt-1 fw-semibold';
+                }
+            })
+            .catch(err => {
+                console.error('Error checking ID:', err);
+                idHelpText.textContent = 'Error connecting to server. Please try again.';
+                idHelpText.className = 'text-danger d-block mt-1';
+            });
+    });
+}
+
+// Restore role / department / course after a failed submit (page reload)
+const oldReg = <?= json_encode([
+    'role'       => $old['role'] ?? '',
+    'department' => $old['department'] ?? '',
+    'course'     => $old['course'] ?? '',
+], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+if (oldReg.role && roleSelect) {
+    roleSelect.value = oldReg.role;
+    roleSelect.dispatchEvent(new Event('change')); // rebuilds labels + department list for that role
+    if (oldReg.department && deptSelect) {
+        deptSelect.value = oldReg.department;
+        updateCourses();
+        if (oldReg.course && courseSelect) courseSelect.value = oldReg.course;
+    }
+}
+
+window.setPortalRole = function (type) {
+    if (type === 'Student') {
+        lockRoleTo('Student');
+    } else {
+        unlockRole();
+    }
+};
+
+        // Dynamic Announcement Modal Populator
+        const annCards = document.querySelectorAll('.announcement-card');
+        annCards.forEach(card => {
+            card.addEventListener('click', () => {
+                document.getElementById('modalAnnTitle').textContent = card.dataset.title;
+                document.getElementById('modalAnnDate').textContent = card.dataset.date;
+                document.getElementById('modalAnnContent').textContent = card.dataset.content;
+            });
+        });
+
+        // Real-Time Password Validation Functions
+        function evaluatePasswordStrength(pass, emailVal, strengthBar, strengthText) {
+            if (!strengthBar || !strengthText) return;
+            let score = 0;
+            const emailUser = emailVal ? emailVal.split('@')[0].toLowerCase() : '';
+
+            if (pass.length >= 8) score++;
+            if (/[A-Z]/.test(pass)) score++;
+            if (/[a-z]/.test(pass)) score++;
+            if (/[0-9]/.test(pass)) score++;
+            if (/[!@#$%^&*(),.?":{}|<>]/.test(pass)) score++;
+
+            if (emailUser && pass.toLowerCase().includes(emailUser)) {
+                score = 0;
+            }
+
+            if (pass.length === 0) {
+                strengthBar.style.width = '0%';
+                strengthBar.className = 'progress-bar';
+                strengthText.textContent = 'Weak';
+                strengthText.style.color = '#888';
+            } else if (score < 3) {
+                strengthBar.style.width = '33%';
+                strengthBar.className = 'progress-bar bg-danger';
+                strengthText.textContent = 'Weak';
+                strengthText.style.color = '#dc3545';
+            } else if (score < 5) {
+                strengthBar.style.width = '66%';
+                strengthBar.className = 'progress-bar bg-warning';
+                strengthText.textContent = 'Moderate';
+                strengthText.style.color = '#ffc107';
+            } else {
+                strengthBar.style.width = '100%';
+                strengthBar.className = 'progress-bar bg-success';
+                strengthText.textContent = 'Strong';
+                strengthText.style.color = '#198754';
+            }
+        }
+
+        function evaluatePasswordMatch(pass, confirmPass, matchBar, matchStatusText) {
+            if (!matchBar || !matchStatusText) return;
+            if (!confirmPass) {
+                matchBar.style.width = '0%';
+                matchBar.className = 'progress-bar';
+                matchStatusText.textContent = 'Not Matching';
+                matchStatusText.style.color = '#888';
+            } else if (pass === confirmPass) {
+                matchBar.style.width = '100%';
+                matchBar.className = 'progress-bar bg-success';
+                matchStatusText.textContent = 'Matching';
+                matchStatusText.style.color = '#198754';
+            } else {
+                matchBar.style.width = '50%';
+                matchBar.className = 'progress-bar bg-danger';
+                matchStatusText.textContent = 'Not Matching';
+                matchStatusText.style.color = '#dc3545';
+            }
+        }
+
+        // Attach Register Password Listeners
+        const regPass = document.getElementById('regPassInput');
+        const regConfirmPass = document.getElementById('regConfirmPassInput');
+        const regEmail = document.getElementById('regEmailInput');
+        if (regPass) {
+            regPass.addEventListener('input', () => {
+                evaluatePasswordStrength(
+                    regPass.value, 
+                    regEmail ? regEmail.value : '', 
+                    document.getElementById('regStrengthBar'), 
+                    document.getElementById('regStrengthText')
+                );
+                if (regConfirmPass) {
+                    evaluatePasswordMatch(
+                        regPass.value, 
+                        regConfirmPass.value, 
+                        document.getElementById('regMatchBar'), 
+                        document.getElementById('regMatchStatusText')
+                    );
+                }
+            });
+        }
+        if (regConfirmPass) {
+            regConfirmPass.addEventListener('input', () => {
+                evaluatePasswordMatch(
+                    regPass ? regPass.value : '', 
+                    regConfirmPass.value, 
+                    document.getElementById('regMatchBar'), 
+                    document.getElementById('regMatchStatusText')
+                );
+            });
+        }
+
+        // Attach Forgot Password Listeners
+        const forgotPass = document.getElementById('forgotPassInput');
+        const forgotConfirmPass = document.getElementById('forgotConfirmPassInput');
+        if (forgotPass) {
+            forgotPass.addEventListener('input', () => {
+                evaluatePasswordStrength(
+                    forgotPass.value, 
+                    '', 
+                    document.getElementById('forgotStrengthBar'), 
+                    document.getElementById('forgotStrengthText')
+                );
+                if (forgotConfirmPass) {
+                    evaluatePasswordMatch(
+                        forgotPass.value, 
+                        forgotConfirmPass.value, 
+                        document.getElementById('forgotMatchBar'), 
+                        document.getElementById('forgotMatchStatusText')
+                    );
+                }
+            });
+        }
+        if (forgotConfirmPass) {
+            forgotConfirmPass.addEventListener('input', () => {
+                evaluatePasswordMatch(
+                    forgotPass ? forgotPass.value : '', 
+                    forgotConfirmPass.value, 
+                    document.getElementById('forgotMatchBar'), 
+                    document.getElementById('forgotMatchStatusText')
+                );
+            });
+        }
+    });
+
+    window.hideModalThen = function (modalEl, callback) {
+        if (!modalEl) { callback && callback(); return; }
+        const instance = bootstrap.Modal.getInstance(modalEl);
+        if (!instance) { callback && callback(); return; }
+
+        let called = false;
+        const done = () => {
+            if (called) return;
+            called = true;
+            modalEl.removeEventListener('hidden.bs.modal', done);
+            callback && callback();
+        };
+        modalEl.addEventListener('hidden.bs.modal', done);
+        setTimeout(done, 350);
+
+        instance.hide();
+    };
+
+    window.showModalById = function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        bootstrap.Modal.getOrCreateInstance(el).show();
+    };
+
+    window.lockRoleTo = function (roleValue) {
+        const roleSelect = document.getElementById('roleSelect');
+        if (!roleSelect) return;
+
+        roleSelect.disabled = false;
+        roleSelect.value = roleValue;
+
+        const oldHidden = document.getElementById('hiddenRoleInput');
+        if (oldHidden) oldHidden.remove();
+
+        roleSelect.disabled = true;
+
+        const hiddenRole = document.createElement('input');
+        hiddenRole.type  = 'hidden';
+        hiddenRole.id    = 'hiddenRoleInput';
+        hiddenRole.name  = 'role';
+        hiddenRole.value = roleValue;
+        roleSelect.parentNode.appendChild(hiddenRole);
+
+        roleSelect.dispatchEvent(new Event('change'));
+    };
+
+    window.unlockRole = function () {
+        const roleSelect = document.getElementById('roleSelect');
+        if (!roleSelect) return;
+
+        const hiddenRole = document.getElementById('hiddenRoleInput');
+        if (hiddenRole) hiddenRole.remove();
+
+        roleSelect.disabled = false;
+    };
+
+    /* ---------- Student branch ---------- */
+
+    window.chooseStudentBranch = function () {
+        window.lockRoleTo('Student');
+        window.hideModalThen(document.getElementById('modalQuestion1'), function () {
+            window.showModalById('modalQuestionStudent');
+        });
+    };
+
+    /* ---------- Department branch ---------- */
+
+    window.chooseDepartmentBranch = function () {
+        window.unlockRole();
+        window.hideModalThen(document.getElementById('modalQuestion1'), function () {
+            window.showModalById('modalQuestionDepartment');
+        });
+    };
+
+    window.chooseRegisteredDepartmentBranch = function () {
+        window.lockRoleTo('Department');
+        window.hideModalThen(document.getElementById('modalQuestionDepartment'), function () {
+            window.showModalById('modalQuestionDept');
+        });
+    };
+
+    /* ---------- Faculty branch (NEW) ---------- */
+
+    // "Are you a department?" → NO
+    window.chooseFacultyBranch = function () {
+        window.unlockRole();
+        window.hideModalThen(document.getElementById('modalQuestionDepartment'), function () {
+            window.showModalById('modalQuestionFaculty');
+        });
+    };
+
+    // "Are you a faculty / professor?" → YES
+    window.chooseRegisteredFacultyBranch = function () {
+        window.lockRoleTo('Professor');
+        window.hideModalThen(document.getElementById('modalQuestionFaculty'), function () {
+            window.showModalById('modalQuestionFacultyReg');
+        });
+    };
+
+    // "Are you a registered faculty?" → YES
+    window.openLoginForFaculty = function () {
+        window.hideModalThen(document.getElementById('modalQuestionFacultyReg'), function () {
+            window.showModalById('loginModal');
+        });
+    };
+
+    // "Are you a registered faculty?" → NO
+    window.openRegisterForFaculty = function () {
+        window.lockRoleTo('Professor');
+        window.hideModalThen(document.getElementById('modalQuestionFacultyReg'), function () {
+            window.showModalById('registerModal');
+        });
+    };
+
+    /* ---------- Back to the first question ---------- */
+
+    // Source modal id is optional. Defaults to the Department question
+    // so existing callers keep working without modification.
+    window.goBackToPortalQuestion = function (sourceModalId) {
+        var srcId = sourceModalId || 'modalQuestionDepartment';
+        var srcEl = document.getElementById(srcId);
+        window.hideModalThen(srcEl, function () {
+            window.showModalById('modalQuestion1');
+        });
+    };
+
+    /* ---------- Finance branch ---------- */
+window.chooseFinanceBranch = function () {
+    window.unlockRole();
+    window.hideModalThen(document.getElementById('modalQuestionFaculty'), function () {
+        window.showModalById('modalQuestionFinance');
+    });
+};
+window.chooseRegisteredFinanceBranch = function () {
+    window.lockRoleTo('finance');
+    window.hideModalThen(document.getElementById('modalQuestionFinance'), function () {
+        window.showModalById('modalQuestionFinanceReg');
+    });
+};
+window.openLoginForFinance = function () {
+    window.hideModalThen(document.getElementById('modalQuestionFinanceReg'), function () {
+        window.showModalById('loginModal');
+    });
+};
+window.openRegisterForFinance = function () {
+    window.lockRoleTo('finance');
+    window.hideModalThen(document.getElementById('modalQuestionFinanceReg'), function () {
+        window.showModalById('registerModal');
+    });
+};
+
+    // Legacy helper kept for compatibility with older buttons.
+    window.setPortalRole = function (type) {
+        if (type === 'Student') {
+            window.lockRoleTo('Student');
+        } else {
+            window.unlockRole();
+        }
+    };
+
+    /* =========================================================================
+       FACULTY / PROFESSOR BRANCH
+       -------------------------------------------------------------------------
+       Faculty members are neither Students nor Departments, so they get
+       their own question. On YES → "Are you a registered faculty?".
+       On that screen YES → Login, NO → Register with role = Professor.
+       ========================================================================= */
+
+    // "Are you a department?" → NO → open the Faculty question
+    window.chooseFacultyBranch = function () {
+        window.unlockRole();
+        window.hideModalThen(document.getElementById('modalQuestionDepartment'), function () {
+            window.showModalById('modalQuestionFaculty');
+        });
+    };
+
+    // "Are you a faculty / professor?" → YES
+    window.chooseRegisteredFacultyBranch = function () {
+        window.lockRoleTo('Professor');
+        window.hideModalThen(document.getElementById('modalQuestionFaculty'), function () {
+            window.showModalById('modalQuestionFacultyReg');
+        });
+    };
+
+    // "Are you a registered faculty?" → YES → open Login
+    window.openLoginForFaculty = function () {
+        window.hideModalThen(document.getElementById('modalQuestionFacultyReg'), function () {
+            window.showModalById('loginModal');
+        });
+    };
+
+    // "Are you a registered faculty?" → NO → open Register (role = Professor)
+    window.openRegisterForFaculty = function () {
+        // Ensure the role dropdown is locked to Professor before opening.
+        window.lockRoleTo('Professor');
+        window.hideModalThen(document.getElementById('modalQuestionFacultyReg'), function () {
+            window.showModalById('registerModal');
+        });
+    };
     </script>
 </body>
 </html>
